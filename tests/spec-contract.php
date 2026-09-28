@@ -35,6 +35,7 @@ error_reporting(E_ALL);
 
 use Monica\Client;
 use Monica\EventFactory;
+use Monica\Presence;
 use Monica\Tests\Spec\JsonSchema;
 use Monica\Transport\Dsn;
 use Monica\Transport\EnvelopeSplitter;
@@ -535,6 +536,27 @@ $unicodeClient->captureException(new RuntimeException("結合できません\tid
 expect($unicodeClient->flush(), 'the unicode envelope should be accepted');
 assertValid($schema, $unicodeTransport->envelopes[0], 'a non-ASCII envelope');
 
+// The heartbeat: a client_report on its own, sent by a flush with no events.
+$heartbeatTransport = new CapturingTransport();
+$heartbeatDsn = 'https://msk_secret@ingest.example.test/contract-' . bin2hex(random_bytes(5));
+$heartbeatClient = new Client([
+    'dsn' => $heartbeatDsn,
+    'environment' => 'contract',
+    'release' => '1.2.3',
+    'transport_instance' => $heartbeatTransport,
+    'auto_capture' => false,
+]);
+expect($heartbeatClient->flush(), 'the heartbeat flush should succeed');
+@unlink(sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'monica-presence-' . sha1($heartbeatDsn) . '.json');
+expect(count($heartbeatTransport->envelopes) === 1, 'a first flush with no events should send the start heartbeat');
+$heartbeat = $heartbeatTransport->envelopes[0];
+assertValid($schema, $heartbeat, 'a client_report heartbeat');
+expect(
+    count($heartbeat['items']) === 1 && $heartbeat['items'][0]['type'] === 'client_report',
+    'payload.md: a client_report goes in an envelope of its own'
+);
+expect(isRfc3339((string) $heartbeat['items'][0]['timestamp']), 'the heartbeat timestamp must be RFC 3339');
+
 // --- 4. the payload obligations the schema cannot express (payload.md) ---
 
 $sdkEnvelopes = [$chained, $mixed, $fatalEnvelope, $overflow, $unicodeTransport->envelopes[0]];
@@ -671,10 +693,11 @@ expect(
 // Every section of transport.json has a consumer now. `status` reaches the SDK
 // through Outcome and the spool flusher, a 422's error.json body is read so its
 // issues get out, a 413 makes the transport split the envelope and post again,
-// and `retry` is RetryPolicy plus the retry state the spool keeps per envelope.
+// `retry` is RetryPolicy plus the retry state the spool keeps per envelope,
+// and `presence` is the client_report heartbeat Presence schedules.
 // Pinning the vocabulary here turns "MONICA grew an obligation the PHP SDK
 // ignores" into a failing test instead of a silent gap.
-$implemented = ['endpoint', 'dsn', 'auth', 'status', 'retry'];
+$implemented = ['endpoint', 'dsn', 'auth', 'status', 'retry', 'presence'];
 $partiallyImplemented = [];
 $unimplemented = [];
 $declared = array_keys($transportSpec);
@@ -769,6 +792,26 @@ foreach ([
     expect(
         (float) $pair[0] === (float) $pair[1],
         'RetryPolicy must match transport.json on ' . $name . ': contract says '
+        . json_encode($pair[0]) . ', the SDK says ' . json_encode($pair[1])
+    );
+}
+
+// The presence numbers and header names are constants for the same reason.
+$presenceSpec = $transportSpec['presence'];
+foreach ([
+    'interval_ms' => [$presenceSpec['interval_ms'], Presence::INTERVAL_MS],
+    'min_interval_ms' => [$presenceSpec['min_interval_ms'], Presence::MIN_INTERVAL_MS],
+    'sample_rate' => [$presenceSpec['sample_rate'], Presence::SAMPLE_RATE],
+    'min_sample_rate' => [$presenceSpec['min_sample_rate'], Presence::MIN_SAMPLE_RATE],
+    'override_headers.interval_ms' => [$presenceSpec['override_headers']['interval_ms'], Presence::INTERVAL_HEADER],
+    'override_headers.sample_rate' => [
+        $presenceSpec['override_headers']['sample_rate'],
+        Presence::SAMPLE_RATE_HEADER,
+    ],
+] as $name => $pair) {
+    expect(
+        $pair[0] === $pair[1] || (is_numeric($pair[0]) && (float) $pair[0] === (float) $pair[1]),
+        'Presence must match transport.json on presence.' . $name . ': contract says '
         . json_encode($pair[0]) . ', the SDK says ' . json_encode($pair[1])
     );
 }

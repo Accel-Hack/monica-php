@@ -15,7 +15,8 @@ declare(strict_types=1);
  *
  * `repeat` multiplies the body, so an oversized response does not need an
  * oversized file to describe it. `retry_after` sets the header of that name,
- * and `max_items` answers 413 for anything bigger.
+ * `presence_interval` sets `X-Monica-Presence-Interval-Ms`, and `max_items`
+ * answers 413 for anything bigger.
  *
  * Every request is appended to `MONICA_STUB_LOG` as one JSON line, so a test
  * can assert on what actually arrived -- that the body is gzipped, and which
@@ -78,5 +79,8 @@ http_response_code($status);
 header('Content-Type: application/json');
 if (isset($directive['retry_after'])) {
     header('Retry-After: ' . (string) $directive['retry_after']);
+}
+if (isset($directive['presence_interval'])) {
+    header('X-Monica-Presence-Interval-Ms: ' . (string) $directive['presence_interval']);
 }
 echo str_repeat($body, $repeat);

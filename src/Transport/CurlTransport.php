@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Monica\Transport;
 
+use Monica\Presence;
 use RuntimeException;
 use Throwable;
 
@@ -98,14 +99,20 @@ final class CurlTransport implements
             return $length;
         };
 
-        // Only one header is acted on, so only one is kept. Collecting them all
+        // Only the headers that are acted on are kept. Collecting them all
         // would invite reading headers the contract says nothing about.
         $retryAfter = null;
-        $readHeader = static function ($handle, string $line) use (&$retryAfter): int {
+        $presenceInterval = null;
+        $readHeader = static function ($handle, string $line) use (&$retryAfter, &$presenceInterval): int {
             unset($handle);
             $colon = strpos($line, ':');
-            if ($colon !== false && strcasecmp(substr($line, 0, $colon), 'Retry-After') === 0) {
-                $retryAfter = substr($line, $colon + 1);
+            if ($colon !== false) {
+                $name = substr($line, 0, $colon);
+                if (strcasecmp($name, 'Retry-After') === 0) {
+                    $retryAfter = substr($line, $colon + 1);
+                } elseif (strcasecmp($name, Presence::INTERVAL_HEADER) === 0) {
+                    $presenceInterval = trim(substr($line, $colon + 1));
+                }
             }
 
             return strlen($line);
@@ -138,7 +145,8 @@ final class CurlTransport implements
             $response = Response::forStatus(
                 $status,
                 $oversized || !Response::carriesDiagnostics($status) ? null : $responseBody,
-                RetryPolicy::parseRetryAfter($retryAfter)
+                RetryPolicy::parseRetryAfter($retryAfter),
+                $presenceInterval
             );
             if ($response->outcome() === Outcome::REJECTED_STOP) {
                 $this->stopped = true;

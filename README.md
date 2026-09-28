@@ -190,6 +190,16 @@ request body、Cookie、Authorization ヘッダ、SQL 引数、`$_SERVER` は読
 `request` / `user` などのキーは、アプリケーションが context で渡したものだけが
 入ります。
 
+### 稼働確認
+
+SDK は稼働確認の `client_report` を、初回と、直近 1 日に MONICA が受理した envelope
+が無いときだけ送ります。送るのはリクエスト終了時の flush で、送る event があるときは
+それで代えます。設定項目はありません。間隔は MONICA 側の project 設定で変わります。
+
+前回受理された時刻は、APCu が有効ならそこに、無ければ
+`sys_get_temp_dir()/monica-presence-<DSN の sha1>.json` に置きます。`spool` では
+spool に書けた時点を数えます。
+
 ### Privacy
 
 `before_send` は queue に入れる前の event 配列を受け取り、加工後の配列か、破棄する
@@ -253,7 +263,7 @@ composer test
 
 `composer test` は 3 つを順に走らせます。
 
-- `tests/run.php`: SDK 内部の振る舞い（DSN 検証、before_send、spool、PSR-18 経路）
+- `tests/run.php`: SDK 内部の振る舞い（DSN 検証、before_send、spool、PSR-18 経路、稼働確認）
 - `tests/fatal-runner.php`: 子プロセスの fatal shutdown で spool に 1 件残ること
 - `tests/spec-contract.php`: 送信する envelope が MONICA の公開契約を満たすこと
 
