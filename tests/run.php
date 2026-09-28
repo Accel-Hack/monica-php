@@ -1722,7 +1722,7 @@ $presenceNow = 1767225600000;
 $presenceFiles = [];
 $presenceDsn = static function () use (&$presenceFiles): string {
     $dsn = 'https://secret@ingest.example.test/presence-' . bin2hex(random_bytes(5));
-    $presenceFiles[] = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'monica-presence-' . sha1($dsn) . '.json';
+    $presenceFiles[] = sys_get_temp_dir() . '/monica-presence-*-' . sha1($dsn) . '.json';
 
     return $dsn;
 };
@@ -1821,6 +1821,47 @@ expect(
     'a failed heartbeat should be sent again at the next interval'
 );
 
+// Requests that overlap a due heartbeat do not all send one: the first flush
+// claims the interval before it sends.
+$dsn = $presenceDsn();
+$overlapping = new RespondingTransport(Response::forStatus(202));
+$first = $request($dsn, $overlapping);
+$second = $request($dsn, $overlapping);
+$first->flush();
+$second->flush();
+expect($triggersOf($overlapping) === ['start'], 'overlapping requests should send one heartbeat, not one each');
+
+// Events accepted earlier in the request make a later flush in it not due.
+$dsn = $presenceDsn();
+$sameRequest = new RespondingTransport(Response::forStatus(202));
+$eventful = $request($dsn, $sameRequest);
+$eventful->captureMessage('first');
+$eventful->flush();
+$eventful->flush();
+expect(
+    $triggersOf($sameRequest) === [] && count($sameRequest->envelopes) === 1,
+    'a flush right after an accepted event envelope should not send a client_report'
+);
+
+// A long-running process decides on every flush.
+$dsn = $presenceDsn();
+$worker = new RespondingTransport(Response::forStatus(202));
+$resident = $request($dsn, $worker);
+$resident->flush();
+for ($elapsedDays = 1; $elapsedDays <= 3; $elapsedDays++) {
+    $presenceNow += $day;
+    $resident->flush();
+}
+expect(
+    $triggersOf($worker) === ['start', 'interval', 'interval', 'interval'],
+    'one client flushing over three days should send three interval heartbeats'
+);
+
+// A record from the future (the clock moved back) does not silence the SDK.
+$presenceNow -= 1000;
+$resident->flush();
+expect(count($triggersOf($worker)) === 5, 'a record in the future should make the heartbeat due');
+
 // The interval MONICA sends with a 202 wins over the default; a broken or
 // missing header keeps what was stored.
 $dsn = $presenceDsn();
@@ -1856,8 +1897,8 @@ foreach (['59999', '6e4', '60000.5', 'abc', '', '-60000', '0x10000'] as $broken)
 expect(Presence::parseInterval(null) === null, 'a missing interval header should be ignored');
 expect(Presence::parseInterval(' 60000 ') === 60000, 'the minimum interval should be accepted');
 
-foreach ($presenceFiles as $file) {
-    @unlink($file);
+foreach ($presenceFiles as $pattern) {
+    array_map('unlink', glob($pattern) ?: []);
 }
 
 echo "MONICA PHP SDK tests passed\n";

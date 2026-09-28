@@ -547,7 +547,7 @@ $heartbeatClient = new Client([
     'auto_capture' => false,
 ]);
 expect($heartbeatClient->flush(), 'the heartbeat flush should succeed');
-@unlink(sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'monica-presence-' . sha1($heartbeatDsn) . '.json');
+array_map('unlink', glob(sys_get_temp_dir() . '/monica-presence-*-' . sha1($heartbeatDsn) . '.json') ?: []);
 expect(count($heartbeatTransport->envelopes) === 1, 'a first flush with no events should send the start heartbeat');
 $heartbeat = $heartbeatTransport->envelopes[0];
 assertValid($schema, $heartbeat, 'a client_report heartbeat');

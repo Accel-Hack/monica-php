@@ -28,12 +28,14 @@ final class Presence
     public const SAMPLE_RATE_HEADER = 'X-Monica-Presence-Sample-Rate';
 
     private string $key;
+    private string $hash;
     /** @var callable(): (int|float) milliseconds since the epoch */
     private $clock;
 
     public function __construct(string $dsn, callable $clock)
     {
-        $this->key = 'monica-presence-' . sha1($dsn);
+        $this->hash = sha1($dsn);
+        $this->key = 'monica-presence-' . $this->hash;
         $this->clock = $clock;
     }
 
@@ -47,13 +49,16 @@ final class Presence
         if ($state === null) {
             return 'start';
         }
+        $elapsed = $this->now() - $state['at'];
 
-        return $this->now() - $state['at'] >= $state['interval_ms'] ? 'interval' : null;
+        // A record from the future means the clock moved back; waiting for it
+        // could mean days of silence.
+        return $elapsed < 0 || $elapsed >= $state['interval_ms'] ? 'interval' : null;
     }
 
     /**
      * Start the interval over from now: an envelope was accepted, or a
-     * heartbeat failed and is given up until the next interval. A valid
+     * heartbeat is about to be sent. A valid
      * interval header replaces the stored interval; a missing or broken one
      * keeps it.
      */
@@ -111,13 +116,25 @@ final class Presence
             apcu_store($this->key, $state);
             return;
         }
+        // Written aside and renamed into place, because readers do not lock.
         // Failing to write only means the next request sends a heartbeat too.
-        @file_put_contents($this->file(), json_encode($state), LOCK_EX);
+        $file = $this->file();
+        $temporary = $file . '.' . (getmypid() ?: 0) . '.tmp';
+        if (@file_put_contents($temporary, json_encode($state)) === false || !@rename($temporary, $file)) {
+            @unlink($temporary);
+        }
     }
 
+    /**
+     * Per user as well as per DSN: a file a CLI run as root left behind is one
+     * php-fpm could read but never update.
+     */
     private function file(): string
     {
-        return sys_get_temp_dir() . DIRECTORY_SEPARATOR . $this->key . '.json';
+        $user = function_exists('posix_geteuid') ? posix_geteuid() : getmyuid();
+
+        return sys_get_temp_dir() . DIRECTORY_SEPARATOR
+            . 'monica-presence-' . (string) $user . '-' . $this->hash . '.json';
     }
 
     private static function apcu(): bool

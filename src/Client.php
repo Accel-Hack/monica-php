@@ -50,8 +50,6 @@ final class Client
     private $random;
     private ?Response $lastResponse = null;
     private Presence $presence;
-    /** The heartbeat this request owes MONICA: `start`, `interval`, or null. */
-    private ?string $heartbeat;
 
     /**
      * @param array<string, mixed> $options
@@ -121,10 +119,7 @@ final class Client
             $this->transport = $httpTransport;
         }
 
-        // Decided once, when the request starts. It goes out with the flush at
-        // the end of the request, unless events go out instead.
         $this->presence = new Presence($dsn, $clock);
-        $this->heartbeat = $this->presence->due();
 
         $reserveBytes = self::positiveInteger($options, 'memory_reserve_bytes', 262144);
         $this->memoryReserve = str_repeat('x', $reserveBytes);
@@ -176,17 +171,16 @@ final class Client
             return false;
         }
         $timeoutMilliseconds = min(max(1, $timeoutMilliseconds), $this->requestTimeoutMilliseconds);
-        if ($this->queue !== []) {
-            // The events are proof enough that the SDK is alive.
-            $this->heartbeat = null;
-        } elseif ($this->heartbeat !== null) {
-            $response = $this->send([$this->eventFactory->clientReport($this->heartbeat)], $timeoutMilliseconds);
-            $this->heartbeat = null;
-            if ($response->outcome() !== Outcome::ACCEPTED) {
-                // Nothing retries within a request, so this one is given up
-                // until the next interval rather than tried on every request.
-                $this->presence->record(null);
-            }
+        // Events are proof enough that the SDK is alive, so the heartbeat only
+        // goes out on a flush with nothing else to send.
+        $trigger = $this->queue === [] ? $this->presence->due() : null;
+        if ($trigger !== null) {
+            // Claim the interval before sending, so the requests that overlap
+            // this one do not all send a heartbeat too. A failed heartbeat is
+            // then given up until the next interval rather than tried on every
+            // request; a 202 overwrites the claim with MONICA's interval.
+            $this->presence->record(null);
+            $this->send([$this->eventFactory->clientReport($trigger)], $timeoutMilliseconds);
         }
         $accepted = true;
         while ($this->queue !== []) {

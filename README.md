@@ -197,8 +197,8 @@ SDK は稼働確認の `client_report` を、初回と、直近 1 日に MONICA 
 それで代えます。設定項目はありません。間隔は MONICA 側の project 設定で変わります。
 
 前回受理された時刻は、APCu が有効ならそこに、無ければ
-`sys_get_temp_dir()/monica-presence-<DSN の sha1>.json` に置きます。`spool` では
-spool に書けた時点を数えます。
+`sys_get_temp_dir()/monica-presence-<実行 user の uid>-<DSN の sha1>.json` に置きます。
+`spool` では spool に書けた時点を数え、MONICA 側の間隔の設定は効かず 1 日固定です。
 
 ### Privacy
 
