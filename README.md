@@ -192,13 +192,33 @@ request body、Cookie、Authorization ヘッダ、SQL 引数、`$_SERVER` は読
 
 ### 稼働確認
 
-SDK は稼働確認の `client_report` を、初回と、直近 1 日に MONICA が受理した envelope
-が無いときだけ送ります。送るのはリクエスト終了時の flush で、送る event があるときは
-それで代えます。設定項目はありません。間隔は MONICA 側の project 設定で変わります。
+SDK は、MONICA が「この SDK はまだ動いている」と分かるように、`client_report` item を
+1 件だけ入れた envelope を送ります。送り先・認証・transport は event と同じです。
+設定項目はありません。
 
-前回受理された時刻は、APCu が有効ならそこに、無ければ
-`sys_get_temp_dir()/monica-presence-<実行 user の uid>-<DSN の sha1>.json` に置きます。
-`spool` では spool に書けた時点を数え、MONICA 側の間隔の設定は効かず 1 日固定です。
+- **いつ送るか**: `flush()` のたびに判定します。shutdown 時の自動 flush（FPM / FastCGI
+  では `fastcgi_finish_request()` の後）も含みます。queue が空で、次のどちらかに当たる
+  ときだけ送ります
+  - 記録が無い。初回や、記録が消えた後（`trigger` は `start`）
+  - 最後に `202` を受けてから間隔（既定 1 日）が過ぎた（`trigger` は `interval`）
+- queue に event があるときは送りません。event の `202` でも期限が伸びます
+- 送る直前に時刻を記録するので、送信に失敗しても次の間隔まで送り直しません
+- 常駐プロセス（queue worker など）では、`flush()` を呼んだときにしか判定しません。
+  shutdown まで `flush()` を呼ばない作りなら、定期的に `flush()` を呼んでください
+- **状態の置き場所**: APCu が有効なら APCu の `monica-presence-<DSN の sha1>`、無ければ
+  `sys_get_temp_dir()/monica-presence-<実行 user の uid>-<DSN の sha1>.json`
+  （`{"at": <ms>, "interval_ms": <ms>}`）です。同じ host の worker 同士はこれを共有します。
+  lock はしないので、同時に判定した worker が 2 件送ることがあります
+- APCu は FPM の再起動で消えるので、再起動後の最初の flush で `start` を送ります。CLI は
+  通常 APCu が無効なので一時ファイルを使います
+- APCu が無く `sys_get_temp_dir()` に書き込めない場合は、記録が残らないため、queue が
+  空の flush のたびに送ります。実行 user が書き込める一時ディレクトリにしてください
+- **MONICA 側の設定**: `202` の応答 header `X-Monica-Presence-Interval-Ms` を読んで保存し、
+  次の判定から使います。数字以外・60000 未満の値は無視します。
+  `X-Monica-Presence-Sample-Rate` は読みません（間引きません）
+- `spool` では spool に書けた時点を受理として数えます。応答 header が届かないので、
+  MONICA 側の間隔の設定は効かず 1 日固定です。送信と再送は event と同じく
+  `spool:flush` が行います
 
 ### Privacy
 
