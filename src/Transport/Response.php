@@ -16,9 +16,10 @@ namespace Monica\Transport;
  * Nothing here changes what happens to an envelope. A rejection is still a
  * rejection; it is merely no longer silent.
  *
- * `Retry-After` is the one response header the SDK acts on, so it is carried
- * here as a number of seconds rather than as a header bag: the rest of the
- * headers are MONICA's business, and a bag would invite reading them.
+ * The response headers the SDK acts on -- `Retry-After`, and the presence
+ * interval MONICA hands out with a 202 -- are carried here one by one rather
+ * than as a header bag: the rest of the headers are MONICA's business, and a
+ * bag would invite reading them.
  */
 final class Response
 {
@@ -41,6 +42,7 @@ final class Response
     /** @var list<int> */
     private array $droppedItemIndexes = [];
     private ?int $retryAfterSeconds;
+    private ?string $presenceInterval;
 
     /**
      * @param list<array{path: string, message: string}> $issues
@@ -51,7 +53,8 @@ final class Response
         ?string $errorCode,
         ?string $errorMessage,
         array $issues,
-        ?int $retryAfterSeconds = null
+        ?int $retryAfterSeconds = null,
+        ?string $presenceInterval = null
     ) {
         $this->outcome = $outcome;
         $this->status = $status;
@@ -59,6 +62,7 @@ final class Response
         $this->errorMessage = $errorMessage;
         $this->issues = $issues;
         $this->retryAfterSeconds = $retryAfterSeconds;
+        $this->presenceInterval = $presenceInterval;
     }
 
     /**
@@ -66,15 +70,18 @@ final class Response
      *                                        read or exceeded MAX_BODY_BYTES
      * @param int|null    $retryAfterSeconds  `Retry-After` as whole seconds, already
      *                                        clamped by RetryPolicy::parseRetryAfter()
+     * @param string|null $presenceInterval   `X-Monica-Presence-Interval-Ms` as sent,
+     *                                        validated by Presence::parseInterval()
      */
     public static function forStatus(
         int $status,
         ?string $body = null,
-        ?int $retryAfterSeconds = null
+        ?int $retryAfterSeconds = null,
+        ?string $presenceInterval = null
     ): self {
         $outcome = Outcome::forStatus($status);
         if ($body === null || $body === '' || !self::carriesDiagnostics($status)) {
-            return new self($outcome, $status, null, null, [], $retryAfterSeconds);
+            return new self($outcome, $status, null, null, [], $retryAfterSeconds, $presenceInterval);
         }
 
         $error = self::parse($body);
@@ -85,7 +92,8 @@ final class Response
             $error['code'],
             $error['message'],
             $error['issues'],
-            $retryAfterSeconds
+            $retryAfterSeconds,
+            $presenceInterval
         );
     }
 
@@ -170,6 +178,15 @@ final class Response
     public function retryAfterSeconds(): ?int
     {
         return $this->retryAfterSeconds;
+    }
+
+    /**
+     * `X-Monica-Presence-Interval-Ms` exactly as MONICA sent it, or null when
+     * it was absent. Validation is Presence's job, where the value is stored.
+     */
+    public function presenceInterval(): ?string
+    {
+        return $this->presenceInterval;
     }
 
     /** One of the Outcome constants. */

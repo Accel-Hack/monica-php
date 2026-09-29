@@ -158,6 +158,7 @@ jobs:
               Monica\Monica::class,
               Monica\Client::class,
               Monica\EventFactory::class,
+              Monica\Presence::class,
               Monica\Transport\CurlTransport::class,
               Monica\Transport\Psr18Transport::class,
               Monica\Transport\SpoolTransport::class,

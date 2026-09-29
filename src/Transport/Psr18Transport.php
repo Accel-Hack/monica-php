@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Monica\Transport;
 
+use Monica\Presence;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
@@ -104,7 +105,10 @@ final class Psr18Transport implements
             Response::carriesDiagnostics($status) ? self::readBody($response) : null,
             RetryPolicy::parseRetryAfter(
                 $response->hasHeader('Retry-After') ? $response->getHeaderLine('Retry-After') : null
-            )
+            ),
+            $response->hasHeader(Presence::INTERVAL_HEADER)
+                ? $response->getHeaderLine(Presence::INTERVAL_HEADER)
+                : null
         );
         if ($result->outcome() === Outcome::REJECTED_STOP) {
             $this->stopped = true;

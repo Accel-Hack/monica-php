@@ -23,7 +23,7 @@ use Throwable;
 final class Client
 {
     public const SDK_NAME = 'ah-monica/monica';
-    public const SDK_VERSION = '0.2.0';
+    public const SDK_VERSION = '0.3.0';
 
     private EventFactory $eventFactory;
     private TransportInterface $transport;
@@ -49,6 +49,7 @@ final class Client
     /** @var callable */
     private $random;
     private ?Response $lastResponse = null;
+    private Presence $presence;
 
     /**
      * @param array<string, mixed> $options
@@ -82,6 +83,11 @@ final class Client
             : static function (): float {
                 return mt_rand() / mt_getrandmax();
             };
+        $clock = isset($options['clock']) && is_callable($options['clock'])
+            ? $options['clock']
+            : static function (): int {
+                return (int) floor(microtime(true) * 1000);
+            };
         $sampleRate = isset($options['sample_rate']) ? (float) $options['sample_rate'] : 1.0;
         if ($sampleRate < 0.0 || $sampleRate > 1.0) {
             throw new InvalidArgumentException('sample_rate must be between 0 and 1');
@@ -112,6 +118,8 @@ final class Client
         } else {
             $this->transport = $httpTransport;
         }
+
+        $this->presence = new Presence($dsn, $clock);
 
         $reserveBytes = self::positiveInteger($options, 'memory_reserve_bytes', 262144);
         $this->memoryReserve = str_repeat('x', $reserveBytes);
@@ -162,31 +170,23 @@ final class Client
         if ($this->handling) {
             return false;
         }
-        $timeoutMilliseconds = max(1, $timeoutMilliseconds);
+        $timeoutMilliseconds = min(max(1, $timeoutMilliseconds), $this->requestTimeoutMilliseconds);
+        // Events are proof enough that the SDK is alive, so the heartbeat only
+        // goes out on a flush with nothing else to send.
+        $trigger = $this->queue === [] ? $this->presence->due() : null;
+        if ($trigger !== null) {
+            // Claim the interval before sending, so the requests that overlap
+            // this one do not all send a heartbeat too. A failed heartbeat is
+            // then given up until the next interval rather than tried on every
+            // request; a 202 overwrites the claim with MONICA's interval.
+            $this->presence->record(null);
+            $this->send([$this->eventFactory->clientReport($trigger)], $timeoutMilliseconds);
+        }
         $accepted = true;
         while ($this->queue !== []) {
             $items = array_slice($this->queue, 0, $this->batchSize);
-            $reportedDiscarded = $this->discarded;
-            $envelope = [
-                'sdk' => ['name' => self::SDK_NAME, 'version' => self::SDK_VERSION],
-                'sent_at' => self::timestamp(),
-                'discarded' => $reportedDiscarded,
-                'items' => $items,
-            ];
-            $this->handling = true;
-            try {
-                $response = $this->sendEnvelope(
-                    $envelope,
-                    min($timeoutMilliseconds, $this->requestTimeoutMilliseconds)
-                );
-            } catch (Throwable $ignored) {
-                $response = Response::forNetworkFailure();
-            } finally {
-                $this->handling = false;
-            }
-            $this->lastResponse = $response;
-            $sent = $response->outcome() === Outcome::ACCEPTED;
-            if (!$sent) {
+            $response = $this->send($items, $timeoutMilliseconds);
+            if ($response->outcome() !== Outcome::ACCEPTED) {
                 // The send failed, but anything the transport dropped along the
                 // way is still gone: an item too large for one envelope cannot
                 // be sent by trying again. Leaving it in the queue would drop
@@ -196,14 +196,45 @@ final class Client
                 break;
             }
             array_splice($this->queue, 0, count($items));
+        }
+
+        return $accepted && $this->queue === [];
+    }
+
+    /**
+     * Send one envelope of `items` and account for the answer. This is the one
+     * place a response is read: an accepted envelope restarts the presence
+     * interval, with the interval MONICA sent along if it sent a valid one.
+     *
+     * @param list<array<string, mixed>> $items
+     */
+    private function send(array $items, int $timeoutMilliseconds): Response
+    {
+        $envelope = [
+            'sdk' => ['name' => self::SDK_NAME, 'version' => self::SDK_VERSION],
+            'sent_at' => self::timestamp(),
+            'discarded' => $this->discarded,
+            'items' => $items,
+        ];
+        $this->handling = true;
+        try {
+            $response = $this->sendEnvelope($envelope, $timeoutMilliseconds);
+        } catch (Throwable $ignored) {
+            $response = Response::forNetworkFailure();
+        } finally {
+            $this->handling = false;
+        }
+        $this->lastResponse = $response;
+        if ($response->outcome() === Outcome::ACCEPTED) {
             // Items the transport had to drop for being too large to fit an
             // envelope on their own are losses like a queue overflow, so they
             // are reported in the next envelope's `discarded` rather than
             // disappearing silently.
             $this->discarded = $response->droppedItems();
+            $this->presence->record($response->presenceInterval());
         }
 
-        return $accepted && $this->queue === [];
+        return $response;
     }
 
     public function installHandlers(): void

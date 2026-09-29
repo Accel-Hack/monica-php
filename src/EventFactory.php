@@ -109,6 +109,28 @@ final class EventFactory
     }
 
     /**
+     * The `client_report` heartbeat item. It skips `before_send`: it carries
+     * nothing but what the SDK was configured with.
+     *
+     * @return array<string, mixed>
+     */
+    public function clientReport(string $trigger): array
+    {
+        $item = [
+            'type' => 'client_report',
+            'timestamp' => self::timestamp(),
+            'platform' => 'php',
+            'environment' => $this->environment,
+            'trigger' => $trigger,
+        ];
+        if ($this->release !== null) {
+            $item['release'] = $this->release;
+        }
+
+        return $item;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function baseEvent(string $level): array

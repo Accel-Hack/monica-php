@@ -5,6 +5,7 @@ declare(strict_types=1);
 require __DIR__ . '/bootstrap.php';
 
 use Monica\Client;
+use Monica\Presence;
 use Monica\Transport\CurlTransport;
 use Monica\Transport\Diagnostics;
 use Monica\Transport\EnvelopeSplitter;
@@ -654,6 +655,7 @@ if (interface_exists(ClientInterface::class) && class_exists(Psr17Factory::class
         public int $status = 202;
         public string $body = '';
         public string $retryAfter = '';
+        public string $presenceInterval = '';
         public int $calls = 0;
 
         public function __construct(Psr17Factory $factory)
@@ -668,6 +670,9 @@ if (interface_exists(ClientInterface::class) && class_exists(Psr17Factory::class
             $response = $this->factory->createResponse($this->status);
             if ($this->retryAfter !== '') {
                 $response = $response->withHeader('Retry-After', $this->retryAfter);
+            }
+            if ($this->presenceInterval !== '') {
+                $response = $response->withHeader('X-Monica-Presence-Interval-Ms', $this->presenceInterval);
             }
             if ($this->body === '') {
                 return $response;
@@ -693,6 +698,23 @@ if (interface_exists(ClientInterface::class) && class_exists(Psr17Factory::class
         );
         $assertCase('PSR-18', $case, $transport->sendEnvelopeResponse($rejectionEnvelope, 2000), $warnings);
     }
+
+    $stubClient->status = 202;
+    $stubClient->body = '';
+    $stubClient->retryAfter = '';
+    $stubClient->presenceInterval = '120000';
+    $presenceTransport = new Psr18Transport(
+        'https://secret@ingest.example.test/1',
+        $stubClient,
+        $factory,
+        $factory,
+        Diagnostics::disabled()
+    );
+    expect(
+        $presenceTransport->sendEnvelopeResponse($rejectionEnvelope, 2000)->presenceInterval() === '120000',
+        'PSR-18: the presence interval header should reach the Response'
+    );
+    $stubClient->presenceInterval = '';
 
     // The same rejection as the client sees it: flush() still answers no and
     // the events stay queued, but the reason is now readable.
@@ -1523,6 +1545,24 @@ if (function_exists('curl_init') && function_exists('proc_open')) {
             'the test should be able to direct the stub server'
         );
         expect(file_put_contents($logFilePath, '') !== false, 'the test should be able to clear the log');
+        expect(
+            file_put_contents($controlFile, (string) json_encode([
+                'status' => 202,
+                'body' => '',
+                'presence_interval' => '120000',
+            ])) !== false,
+            'the test should be able to direct the stub server'
+        );
+        expect(
+            (new CurlTransport('http://secret@127.0.0.1:' . $port . '/1'))
+                ->sendEnvelopeResponse($rejectionEnvelope, 5000)->presenceInterval() === '120000',
+            'cURL: the presence interval header should reach the Response'
+        );
+        expect(
+            file_put_contents($controlFile, (string) json_encode(['status' => 202, 'body' => ''])) !== false,
+            'the test should be able to direct the stub server'
+        );
+        expect(file_put_contents($logFilePath, '') !== false, 'the test should be able to clear the log');
         $postingCurl = new CurlTransport('http://secret@127.0.0.1:' . $port . '/1');
         $postedEnvelope = $rejectionEnvelope;
         $postedEnvelope['items'] = [
@@ -1671,6 +1711,194 @@ if (function_exists('curl_init') && function_exists('proc_open')) {
         @unlink($controlFile);
         @unlink($logFilePath);
     }
+}
+
+// --- presence: the client_report heartbeat ---------------------------------
+//
+// Each Client below is one php-fpm request: what carries over between them is
+// only what Presence keeps outside the process. Every scenario gets its own
+// DSN, so its record starts empty and no other test in this file shares it.
+$presenceNow = 1767225600000;
+$presenceFiles = [];
+$presenceDsn = static function () use (&$presenceFiles): string {
+    $dsn = 'https://secret@ingest.example.test/presence-' . bin2hex(random_bytes(5));
+    $presenceFiles[] = sys_get_temp_dir() . '/monica-presence-*-' . sha1($dsn) . '.json';
+
+    return $dsn;
+};
+$request = static function (string $dsn, TransportInterface $transport) use (&$presenceNow): Client {
+    return new Client([
+        'dsn' => $dsn,
+        'environment' => 'test',
+        'release' => 'r1',
+        'transport_instance' => $transport,
+        'auto_capture' => false,
+        'clock' => static function () use (&$presenceNow): int {
+            return $presenceNow;
+        },
+    ]);
+};
+$triggersOf = static function (RespondingTransport $transport): array {
+    $triggers = [];
+    foreach ($transport->envelopes as $envelope) {
+        foreach ($envelope['items'] as $item) {
+            if ($item['type'] === 'client_report') {
+                expect(count($envelope['items']) === 1, 'a client_report must travel alone');
+                $triggers[] = $item['trigger'];
+            }
+        }
+    }
+
+    return $triggers;
+};
+$day = Presence::INTERVAL_MS;
+
+// init sends `start`, alone, and nothing more until the interval has passed.
+$dsn = $presenceDsn();
+$heartbeats = new RespondingTransport(Response::forStatus(202));
+$request($dsn, $heartbeats)->flush();
+expect($triggersOf($heartbeats) === ['start'], 'the first request should send a start heartbeat');
+$startItem = $heartbeats->envelopes[0]['items'][0];
+expect(
+    $startItem['platform'] === 'php' && $startItem['environment'] === 'test' && $startItem['release'] === 'r1',
+    'the heartbeat should carry platform, environment and release: ' . json_encode($startItem)
+);
+expect(
+    $heartbeats->envelopes[0]['sdk'] === ['name' => Client::SDK_NAME, 'version' => Client::SDK_VERSION],
+    'the heartbeat envelope should carry the usual sdk block'
+);
+$presenceNow += $day - 1;
+$request($dsn, $heartbeats)->flush();
+expect($triggersOf($heartbeats) === ['start'], 'no heartbeat within the interval of the last 202');
+$presenceNow += 1;
+$due = $request($dsn, $heartbeats);
+$due->flush();
+$due->flush();
+$request($dsn, $heartbeats)->flush();
+expect(
+    $triggersOf($heartbeats) === ['start', 'interval'],
+    'one interval heartbeat once the interval has passed, not two: ' . json_encode($triggersOf($heartbeats))
+);
+
+// Events accepted with a 202 push the heartbeat back; the heartbeat does not
+// ride along with them.
+$presenceNow += $day - 1;
+$busy = $request($dsn, $heartbeats);
+$busy->captureMessage('still here');
+$busy->flush();
+expect(
+    count(end($heartbeats->envelopes)['items']) === 1
+        && end($heartbeats->envelopes)['items'][0]['type'] === 'error',
+    'a due heartbeat should not be sent alongside events'
+);
+$presenceNow += 2;
+$request($dsn, $heartbeats)->flush();
+expect(
+    $triggersOf($heartbeats) === ['start', 'interval'],
+    'an accepted error envelope should restart the interval'
+);
+
+// Failed envelopes do not count, and a failed heartbeat waits for the next
+// interval instead of being tried on every request.
+$dsn = $presenceDsn();
+$flaky = new RespondingTransport(Response::forStatus(202));
+$request($dsn, $flaky)->flush();
+$presenceNow += $day - 1;
+$flaky->response = Response::forStatus(503);
+$failing = $request($dsn, $flaky);
+$failing->captureMessage('lost');
+$failing->flush();
+$presenceNow += 1;
+$request($dsn, $flaky)->flush();
+expect($triggersOf($flaky) === ['start', 'interval'], 'a failed error envelope should not restart the interval');
+$request($dsn, $flaky)->flush();
+expect($triggersOf($flaky) === ['start', 'interval'], 'a failed heartbeat should not be retried per request');
+$flaky->response = Response::forStatus(202);
+$presenceNow += $day;
+$request($dsn, $flaky)->flush();
+expect(
+    $triggersOf($flaky) === ['start', 'interval', 'interval'],
+    'a failed heartbeat should be sent again at the next interval'
+);
+
+// Requests that overlap a due heartbeat do not all send one: the first flush
+// claims the interval before it sends.
+$dsn = $presenceDsn();
+$overlapping = new RespondingTransport(Response::forStatus(202));
+$first = $request($dsn, $overlapping);
+$second = $request($dsn, $overlapping);
+$first->flush();
+$second->flush();
+expect($triggersOf($overlapping) === ['start'], 'overlapping requests should send one heartbeat, not one each');
+
+// Events accepted earlier in the request make a later flush in it not due.
+$dsn = $presenceDsn();
+$sameRequest = new RespondingTransport(Response::forStatus(202));
+$eventful = $request($dsn, $sameRequest);
+$eventful->captureMessage('first');
+$eventful->flush();
+$eventful->flush();
+expect(
+    $triggersOf($sameRequest) === [] && count($sameRequest->envelopes) === 1,
+    'a flush right after an accepted event envelope should not send a client_report'
+);
+
+// A long-running process decides on every flush.
+$dsn = $presenceDsn();
+$worker = new RespondingTransport(Response::forStatus(202));
+$resident = $request($dsn, $worker);
+$resident->flush();
+for ($elapsedDays = 1; $elapsedDays <= 3; $elapsedDays++) {
+    $presenceNow += $day;
+    $resident->flush();
+}
+expect(
+    $triggersOf($worker) === ['start', 'interval', 'interval', 'interval'],
+    'one client flushing over three days should send three interval heartbeats'
+);
+
+// A record from the future (the clock moved back) does not silence the SDK.
+$presenceNow -= 1000;
+$resident->flush();
+expect(count($triggersOf($worker)) === 5, 'a record in the future should make the heartbeat due');
+
+// The interval MONICA sends with a 202 wins over the default; a broken or
+// missing header keeps what was stored.
+$dsn = $presenceDsn();
+$configured = new RespondingTransport(Response::forStatus(202, null, null, '120000'));
+$request($dsn, $configured)->flush();
+$configured->response = Response::forStatus(202, null, null, '6e4');
+$presenceNow += 119999;
+$request($dsn, $configured)->flush();
+expect($triggersOf($configured) === ['start'], 'the configured interval has not passed yet');
+$presenceNow += 1;
+$request($dsn, $configured)->flush();
+expect($triggersOf($configured) === ['start', 'interval'], 'the interval from the header should be used');
+// That answer carried `6e4`. Read as 60000 it would make this one due.
+$configured->response = Response::forStatus(202);
+$presenceNow += 60000;
+$request($dsn, $configured)->flush();
+$presenceNow += 60000;
+$request($dsn, $configured)->flush();
+// That answer carried no header. Falling back to the default would make the
+// next heartbeat a day away.
+$presenceNow += 119999;
+$request($dsn, $configured)->flush();
+$presenceNow += 1;
+$request($dsn, $configured)->flush();
+expect(
+    $triggersOf($configured) === ['start', 'interval', 'interval', 'interval'],
+    'a broken header and a missing one should both keep the stored interval: '
+    . json_encode($triggersOf($configured))
+);
+foreach (['59999', '6e4', '60000.5', 'abc', '', '-60000', '0x10000'] as $broken) {
+    expect(Presence::parseInterval($broken) === null, 'interval header "' . $broken . '" should be ignored');
+}
+expect(Presence::parseInterval(null) === null, 'a missing interval header should be ignored');
+expect(Presence::parseInterval(' 60000 ') === 60000, 'the minimum interval should be accepted');
+
+foreach ($presenceFiles as $pattern) {
+    array_map('unlink', glob($pattern) ?: []);
 }
 
 echo "MONICA PHP SDK tests passed\n";

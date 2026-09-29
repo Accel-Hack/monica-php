@@ -107,6 +107,7 @@ if (!\Monica\Monica::flush()) {
 | `outcome()` | `accepted` / `rejected` / `rejected_stop` / `retryable` |
 | `retryAfterSeconds()` | `Retry-After` を整数秒にしたもの。無ければ `null` |
 | `droppedItems()` | 大きすぎて捨てた item の数 |
+| `presenceInterval()` | 応答 header `X-Monica-Presence-Interval-Ms` を受け取ったままの文字列。無ければ `null` |
 
 `Client::isStopped()` は `401` で送信が止まったかを返します。`spool` mode では常に
 `false` です（envelope は disk に書くだけで、MONICA と話すのは flusher の transport の
