@@ -1,8 +1,9 @@
 name: ci
 
-# PHP SDK の検査。見るのは 4 つ。
+# PHP SDK の検査。見るのは 5 つ。
 #
 #   - test:    対応する PHP 全版で振る舞いと契約テストが通ること
+#   - laravel: 新規の Laravel アプリに入れて、例外が 1 回ずつ届くこと
 #   - spec:    取り込んだ公開契約が配信元から動いていないこと
 #   - package: Packagist が配る tarball の中身と、それだけで autoload できること
 #   - release: タグと SDK_VERSION が一致すること（タグを打ったときだけ）
@@ -87,6 +88,48 @@ jobs:
           fi
           echo "no deprecation from src/"
 
+  laravel:
+    name: Laravel ${{ matrix.laravel }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 対応する Laravel 8〜13 の両端と、その間の PHP 版ごとに 1 つ。
+        include:
+          - { laravel: "8", php: "7.4" }
+          - { laravel: "9", php: "8.0" }
+          - { laravel: "11", php: "8.3" }
+          - { laravel: "13", php: "8.5" }
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json, zlib, pdo_sqlite
+          coverage: none
+
+      - name: Laravelアプリを作ってSDKを入れる
+        # 8 / 9 は security advisory で composer に止められるので、検査用の
+        # アプリでだけ止めない。SDK は checkout をそのまま path repository で入れる。
+        run: |
+          app="$RUNNER_TEMP/app"
+          composer create-project laravel/laravel "$app" "^${{ matrix.laravel }}.0" --no-install --no-scripts --no-interaction
+          cd "$app"
+          composer config audit.block-insecure false
+          composer config repositories.monica '{"type": "path", "url": "${{ github.workspace }}", "options": {"versions": {"ah-monica/monica": "dev-ci"}}}'
+          composer require ah-monica/monica:dev-ci --no-interaction
+          cp .env.example .env
+          php artisan key:generate
+          if grep -q '^DB_CONNECTION=sqlite' .env; then
+            touch database/database.sqlite
+            php artisan migrate --force
+          fi
+
+      - name: 例外が1回ずつ届くか
+        run: bash tests/laravel.sh "$RUNNER_TEMP/app"
+
   spec:
     # 配信元を叩くので matrix から外してある。network の失敗で PHP 4 版の
     # job が道連れになると、落ちた理由が読めなくなる。
@@ -139,7 +182,7 @@ jobs:
               exit 1
             fi
           done
-          for required in src/Monica.php composer.json bin/monica LICENSE; do
+          for required in src/Monica.php src/Laravel/MonicaServiceProvider.php config/monica.php composer.json bin/monica LICENSE; do
             if ! grep -qx "$required" /tmp/contents.txt; then
               echo "::error::配布物に $required がありません。"
               exit 1

@@ -35,6 +35,38 @@ port も）に `/v1/envelope` を付けた URL です。DSN の path は使い�
 handler がある場合は、SDK の処理後にその handler へ chain します。登録したくない
 場合は `'auto_capture' => false` を渡してください。
 
+## Laravel で使う
+
+Laravel 8〜13 に対応しています（8 / 9 / 11 / 13 で検証しています）。`composer require`
+すると package discovery が `Monica\Laravel\MonicaServiceProvider` を登録するので、
+`Monica::init()` は呼ばずに `.env` へ設定を書きます。
+
+```dotenv
+MONICA_DSN=https://msk_xxxxx@<host>/
+MONICA_ENVIRONMENT=production   # 省略時は APP_ENV
+MONICA_RELEASE=                 # 任意
+MONICA_TRANSPORT=shutdown       # shutdown | spool
+MONICA_SAMPLE_RATE=1.0
+```
+
+- **送るもの**: Laravel の exception handler が報告する例外です。request・artisan
+  command・queue job で起きた例外と `report($e)` がこれに当たり、`$dontReport` など
+  報告しない設定はそのまま効きます。PHP warning / notice は Laravel が `ErrorException`
+  に変えて報告したものを 1 件、fatal error は shutdown 時に 1 件送ります
+- **送る時機**: process の shutdown 時です。queue worker は次の job を取りに行くたび
+  （`Looping` event）に送るので、待機中も稼働確認が届きます
+- **DSN が空なら何もしません**。handler にも登録しないので、`\Monica\Monica::captureException()`
+  は `LogicException` を投げます。アプリから送るときは `report($e)` を使ってください
+- テストで送らないよう、`phpunit.xml` で DSN を空にしてください:
+  `<env name="MONICA_DSN" value=""/>`
+- 他の option（「オプション」の表）は `php artisan vendor:publish --tag=monica-config`
+  で書き出した `config/monica.php` に足します。`config:cache` するなら `before_send` は
+  closure ではなく `[MyClass::class, 'method']` の形で書きます。`auto_capture` は常に
+  `false` で渡します
+- Octane の request ごとの送信には対応していません（worker の終了時に送ります）
+- `spool` の送信は「spool の運用」と同じく `vendor/bin/monica spool:flush` を cron で
+  回します。`bin/monica` は `.env` を読まないので、`MONICA_DSN` は cron 側で渡します
+
 ## 使い方
 
 ### 例外・メッセージを送る
@@ -286,6 +318,17 @@ composer test
 - `tests/run.php`: SDK 内部の振る舞い（DSN 検証、before_send、spool、PSR-18 経路、稼働確認）
 - `tests/fatal-runner.php`: 子プロセスの fatal shutdown で spool に 1 件残ること
 - `tests/spec-contract.php`: 送信する envelope が MONICA の公開契約を満たすこと
+
+Laravel への組み込みは `tests/laravel.sh` が見ます。SDK を path repository で入れた
+Laravel アプリを渡します（CI の `laravel` job と同じ手順です）。
+
+```sh
+composer create-project laravel/laravel /tmp/app
+cd /tmp/app
+composer config repositories.monica '{"type": "path", "url": "<この repository>", "options": {"versions": {"ah-monica/monica": "dev-local"}}}'
+composer require ah-monica/monica:dev-local
+cd - && bash tests/laravel.sh /tmp/app
+```
 
 ### 公開契約（spec/）
 
