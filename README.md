@@ -39,30 +39,35 @@ handler がある場合は、SDK の処理後にその handler へ chain しま�
 
 Laravel 8〜13 に対応しています（8 / 9 / 11 / 13 で検証しています）。`composer require`
 すると package discovery が `Monica\Laravel\MonicaServiceProvider` を登録するので、
-`Monica::init()` は呼ばずに `.env` へ設定を書きます。
+`Monica::init()` は呼ばずに `.env` へ設定を書きます。自前で `Monica::init()` を
+呼んでいた場合は消してください。`dont-discover` には入れないでください。
 
 ```dotenv
 MONICA_DSN=https://msk_xxxxx@<host>/
 MONICA_ENVIRONMENT=production   # 省略時は APP_ENV
-MONICA_RELEASE=                 # 任意
+MONICA_RELEASE=                 # 任意。空なら送りません
 MONICA_TRANSPORT=shutdown       # shutdown | spool
 MONICA_SAMPLE_RATE=1.0
 ```
 
 - **送るもの**: Laravel の exception handler が報告する例外です。request・artisan
   command・queue job で起きた例外と `report($e)` がこれに当たり、`$dontReport` など
-  報告しない設定はそのまま効きます。PHP warning / notice は Laravel が `ErrorException`
-  に変えて報告したものを 1 件、fatal error は shutdown 時に 1 件送ります
+  報告しない設定はそのまま効きます。アプリの `reportable` が `false` を返した例外や、
+  例外自身の `report()` が処理した例外は届きません。PHP warning / notice は Laravel が
+  `ErrorException` に変えて報告したものを 1 件、fatal error は shutdown 時に 1 件送ります
 - **送る時機**: process の shutdown 時です。queue worker は次の job を取りに行くたび
-  （`Looping` event）に送るので、待機中も稼働確認が届きます
+  （`Looping` event）と停止する前（`WorkerStopping` event。job の timeout で kill
+  されるときも含みます）に送ります。job を待っている間も稼働確認が届きます
+  （メンテナンスモードの間は除きます）
 - **DSN が空なら何もしません**。handler にも登録しないので、`\Monica\Monica::captureException()`
   は `LogicException` を投げます。アプリから送るときは `report($e)` を使ってください
 - テストで送らないよう、`phpunit.xml` で DSN を空にしてください:
   `<env name="MONICA_DSN" value=""/>`
 - 他の option（「オプション」の表）は `php artisan vendor:publish --tag=monica-config`
-  で書き出した `config/monica.php` に足します。`config:cache` するなら `before_send` は
-  closure ではなく `[MyClass::class, 'method']` の形で書きます。`auto_capture` は常に
-  `false` で渡します
+  で書き出した `config/monica.php` に足します。`.env` で空にした key は既定値になります。
+  `config:cache` するなら `before_send` は closure ではなく static method を
+  `[MyClass::class, 'method']` の形で書きます。`auto_capture` は常に `false` で渡し、
+  `error_types` は効きません（PHP error は Laravel の `error_reporting` に従います）
 - Octane の request ごとの送信には対応していません（worker の終了時に送ります）
 - `spool` の送信は「spool の運用」と同じく `vendor/bin/monica spool:flush` を cron で
   回します。`bin/monica` は `.env` を読まないので、`MONICA_DSN` は cron 側で渡します

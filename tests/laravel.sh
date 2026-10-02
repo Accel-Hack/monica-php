@@ -33,14 +33,17 @@ Illuminate\Support\Facades\Artisan::command('monica:fixture-warning', function (
 Illuminate\Support\Facades\Artisan::command('monica:fixture-fatal', function () {
     str_repeat('x', PHP_INT_MAX);
 });
-Illuminate\Support\Facades\Artisan::command('monica:fixture-worker', function () {
+Illuminate\Support\Facades\Artisan::command('monica:fixture-worker {event}', function () {
     report(new LogicException('reported in a worker'));
     $before = (string) file_get_contents(getenv('MONICA_STUB_LOG'));
-    event(new Illuminate\Queue\Events\Looping('sync', 'default'));
+    $event = $this->argument('event') === 'stopping'
+        ? new Illuminate\Queue\Events\WorkerStopping(0)
+        : new Illuminate\Queue\Events\Looping('sync', 'default');
+    event($event);
     $after = (string) file_get_contents(getenv('MONICA_STUB_LOG'));
     $this->line(strpos($before, 'worker') === false && strpos($after, 'worker') !== false
-        ? 'flushed on looping'
-        : 'not flushed on looping');
+        ? 'flushed on event'
+        : 'not flushed on event');
 });
 PHP
   cat >> "$app/routes/web.php" <<'PHP'
@@ -108,12 +111,17 @@ if ! grep -q 'thrown from command' "$work/out" || grep -q 'must be called first'
   sed 's/^/     | /' "$work/out"
   failures=$((failures + 1))
 fi
-expect 'worker は Looping で送る' 'reported in a worker' artisan monica:fixture-worker
-if ! grep -qx 'flushed on looping' "$work/out"; then
-  echo "FAIL worker が Looping の前に送ったか、Looping で送らなかった"
-  sed 's/^/     | /' "$work/out"
-  failures=$((failures + 1))
-fi
+for event in looping stopping; do
+  expect "worker は $event で送る" 'reported in a worker' artisan monica:fixture-worker "$event"
+  if ! grep -qx 'flushed on event' "$work/out"; then
+    echo "FAIL worker が $event の前に送ったか、$event で送らなかった"
+    sed 's/^/     | /' "$work/out"
+    failures=$((failures + 1))
+  fi
+done
+expect '.env の空の MONICA_* は既定値になる' 'thrown from command' \
+  env MONICA_ENVIRONMENT= MONICA_TRANSPORT= MONICA_SAMPLE_RATE= MONICA_RELEASE= \
+  bash -c "cd '$app' && MONICA_DSN='$dsn' php artisan monica:fixture-throw"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures failure(s)"

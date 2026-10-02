@@ -33,9 +33,14 @@ final class MonicaServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(dirname(__DIR__, 2) . '/config/monica.php', 'monica');
 
+        // A key left blank in .env (`MONICA_RELEASE=`) comes back as '', and
+        // means "the default" rather than an empty release or a sample rate
+        // of 0.
+        $options = array_filter((array) $this->app['config']->get('monica', []), static function ($value): bool {
+            return $value !== null && $value !== '';
+        });
         // No DSN means MONICA is off for this environment (local, CI), not a
         // misconfiguration worth failing every request over.
-        $options = (array) $this->app['config']->get('monica', []);
         if (trim((string) ($options['dsn'] ?? '')) === '') {
             return;
         }
@@ -44,30 +49,46 @@ final class MonicaServiceProvider extends ServiceProvider
             register_shutdown_function([self::$client, 'handleShutdown']);
         }
         $client = self::$client;
-
-        // Hooked when the handler is built rather than fetched in boot():
-        // Collision (console) builds the app's handler during its own
-        // register() and replaces it with a wrapper. Discovered packages
-        // register by name, so this runs first and still sees the app's
-        // handler. The wrapper is skipped: on Laravel 8 / 9 it has no
-        // reportable(), and later it forwards to the handler hooked already.
-        $this->app->afterResolving(ExceptionHandler::class, static function ($handler) use ($client): void {
-            if (!$handler instanceof Handler) {
-                return;
-            }
+        $hook = static function ($handler) use ($client): void {
             $handler->reportable(static function (Throwable $exception) use ($client): void {
                 if (!$exception instanceof FatalError) {
                     $client->captureException($exception);
                 }
             });
-        });
+        };
+
+        // Hooked when the handler is built rather than fetched in boot():
+        // Collision (console) builds the app's handler during its own
+        // register() and replaces it with a wrapper. Discovered packages
+        // register by name, so this normally runs first and still sees the
+        // app's handler. The wrapper is skipped: on Laravel 8 / 9 it has no
+        // reportable(), and later it forwards to the handler hooked already.
+        if (!$this->app->resolved(ExceptionHandler::class)) {
+            $this->app->afterResolving(ExceptionHandler::class, static function ($handler) use ($hook): void {
+                if ($handler instanceof Handler && method_exists($handler, 'reportable')) {
+                    $hook($handler);
+                }
+            });
+        } else {
+            // Registered late (the package taken out of discovery, or another
+            // provider resolved the handler first): hook whatever is there.
+            // Collision's wrapper on Laravel 8 / 9 has nothing to hook.
+            $handler = $this->app->make(ExceptionHandler::class);
+            if (method_exists($handler, 'reportable')) {
+                $hook($handler);
+            }
+        }
 
         // A queue worker never reaches shutdown between jobs. It fires Looping
         // before taking each job, so what the last job reported goes out then,
-        // and an idle worker still sends its heartbeat.
-        $this->app['events']->listen('Illuminate\Queue\Events\Looping', static function () use ($client): void {
-            $client->flush();
-        });
+        // and an idle worker still sends its heartbeat. A worker that stops,
+        // including one killed for a job timeout, fires WorkerStopping first.
+        $this->app['events']->listen(
+            ['Illuminate\Queue\Events\Looping', 'Illuminate\Queue\Events\WorkerStopping'],
+            static function () use ($client): void {
+                $client->flush();
+            }
+        );
     }
 
     public function boot(): void
