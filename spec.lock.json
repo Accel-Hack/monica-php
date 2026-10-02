@@ -1,14 +1,14 @@
 {
     "origin": "https://spec.monica.accelhack.net",
     "version": "v1",
-    "revision": "d123de64f22e0c66af7b0fe4bc1eb7d91c90447547c5cb973ceb752fd0180e75",
+    "revision": "c4a413f4e5a7bec985ed214cf92dec5e06b5c5316e617c1256b40163ecc3c526",
     "files": {
         "README.md": "c2a336c668644eb975888798ed913b96ef24b3e17fa7ae90f4b9eff74394e622",
         "envelope.json": "36b68e2a8dc00f8144ef3d8ab670a2a59b7091072841cd521e99ae59dead8abc",
         "error.json": "3db6dd5d1e6c330bbedf2b8d801744d68b43ac0f77c220565affc5c3c760b519",
         "ingest.md": "0f3de31c6bb2149ae8ac69be41908bd8db07ef098af8f32320193d668f931279",
         "limits.json": "d75f08e62a0304a70e1c8c82ce3738a37433f910dd86c69d65699734180fe58f",
-        "payload.md": "2f17d7b27f510c088460364c3bb2a572fbe9c13ea750edd88e761c66245b6936",
+        "payload.md": "9272485d36bc7ca27f78f7a72e18e356239c36b8f9b7a4b48d8721915674b89e",
         "transport.json": "c8619a6af1a0e1ced3d5a044bd43cb2dbad6fd7235b8502cc533d12965ffd7a0",
         "vectors/envelope/client-report-missing-environment.json": "e2b1a82ecec9193a4cc4d9b1239f3ffd2000fa42226e05d60a14a003993e6e07",
         "vectors/envelope/client-report-only.json": "4c8523266e0566d9a4f40d8a6a184cedac9a70ed783f3540c31fa92e2b29aea4",
