@@ -1,6 +1,6 @@
 {
   "name": "ah-monica/monica",
-  "description": "Framework-independent PHP error monitoring SDK for MONICA",
+  "description": "PHP error monitoring SDK for MONICA, with Laravel integration",
   "license": "Apache-2.0",
   "type": "library",
   "require": {
@@ -39,5 +39,12 @@
   "support": {
     "issues": "https://github.com/Accel-Hack/monica/issues",
     "source": "https://github.com/Accel-Hack/monica"
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Monica\\Laravel\\MonicaServiceProvider"
+      ]
+    }
   }
 }
