@@ -240,6 +240,26 @@ SDK は、MONICA が「この SDK はまだ動いている」と分かるよう�
 transport と hook 内で起きた例外はアプリケーションへ投げ返さず、MONICA 自身の失敗を
 再収集することもありません。
 
+## Issue のまとめ方
+
+どのエラーを同じ Issue にまとめるかは MONICA 側で決まり、SDK は決めません。規則は
+[`spec/v1/grouping.md`](spec/v1/grouping.md) にあります。分かれ方が意外なときは、管理画面の
+Issue 詳細の「まとめ方」で、その Issue がどの値でまとめられたかを確かめてください。
+
+この SDK に固有の点は次のとおりです。
+
+- frame の関数名は `Class->method`（static は `Class::method`）で送ります。closure と匿名クラスの
+  名前に入るファイルパスや行番号は、MONICA が無視します
+- throw した地点の frame は、関数名が常に `{throw}` です。throw した関数の名前は、その 1 つ外側の
+  frame に載ります
+- `vendor` の下の frame は `in_app: false` になります。`project_root` を渡すと、その下のファイル
+  だけが `in_app: true` になります
+- PHP error（warning・notice・fatal error）は、発生したファイルの frame 1 つだけで送ります。関数名が
+  無いので、同じファイルで起きた同じ種類の error（`E_WARNING` など）は、行やメッセージが違っても
+  1 つの Issue になります
+- 分けたいときは、context の `fingerprint` で渡します。既定の分け方を置き換えるので、どこで
+  起きたかの区別も値に含めてください
+
 ## 送信結果と診断
 
 ingest が envelope を拒否した場合、`422`（schema 不正）と `401`（key 拒否）は既定で
